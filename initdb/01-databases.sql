@@ -1,0 +1,3 @@
+CREATE USER airflow WITH PASSWORD '1234';
+CREATE DATABASE airflow OWNER airflow;
+CREATE DATABASE convenios OWNER airflow;
