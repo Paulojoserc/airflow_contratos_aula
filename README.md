@@ -21,13 +21,13 @@ API Ceará Transparente
 
 Serviços do `docker-compose.yaml`:
 
-| Serviço | Função |
-|---|---|
-| `postgres` | Banco de dados (metadados do Airflow e tabelas de dados) |
-| `airflow-init` | Executa a migração do banco e termina |
-| `airflow-apiserver` | Interface web em `http://localhost:8080` |
-| `airflow-scheduler` | Agenda e dispara as execuções |
-| `airflow-dag-processor` | Lê os arquivos da pasta `dags/` |
+| Serviço | Porta no host | Função |
+|---|---|---|
+| `postgres` | 5432 | Banco de dados (metadados do Airflow e tabelas de dados) |
+| `airflow-init` | - | Executa a migração do banco e termina |
+| `airflow-apiserver` | 8081 | Interface web (porta 8080 dentro do container) |
+| `airflow-scheduler` | - | Agenda e dispara as execuções |
+| `airflow-dag-processor` | - | Lê os arquivos da pasta `dags/` |
 
 ## Estrutura
 
@@ -40,9 +40,9 @@ Serviços do `docker-compose.yaml`:
 │   ├── 01-databases.sql      # usuário e bancos
 │   ├── 02-convenios.sql      # tabela convenios
 │   └── 03-contratos.sql      # tabela contratos
-├── logs/                     # logs do Airflow (ignorados pelo Git)
 ├── plugins/
-├── Dockerfile                # imagem do Airflow com pandas
+├── Dockerfile                # imagem do Airflow com pandas, dags e plugins
+├── Dockerfile.postgres       # imagem do Postgres com os scripts de initdb
 ├── docker-compose.yaml
 ├── .env.example              # modelo das variáveis de ambiente
 └── .gitignore
@@ -78,33 +78,51 @@ O arquivo `.env` não vai para o repositório (está no `.gitignore`).
 docker compose up -d --build
 ```
 
-Acesse `http://localhost:8080` e entre com o usuário `admin`. A senha fica em:
+Acesse `http://localhost:8081` e entre com o usuário `admin`. A senha é gerada a cada subida do container. Para consultá-la:
 
 ```bash
-docker compose exec airflow-apiserver cat /opt/airflow/simple_auth_manager_passwords.json.generated
+docker logs $(docker ps -q -f name=apiserver | head -n 1) 2>&1 | grep "Password for user"
 ```
 
 Na interface:
 
-1. Abra a DAG `api_contratos_ceara_postgresql`.
-2. Ative a DAG e clique em **Trigger**.
+1. Pause a DAG `api_convenios_ceara_postgresql`, se estiver ativa.
+2. Abra a DAG `api_contratos_ceara_postgresql`, ative-a e clique em **Trigger**.
 3. Acompanhe as tasks `coletar`, `preparar` e `salvar`.
 
 ## Verificando os dados
 
 ```bash
-docker compose exec postgres psql -U airflow -d convenios -c "SELECT count(*) FROM contratos;"
+docker exec $(docker ps -q -f name=postgres | head -n 1) psql -U airflow -d convenios -c "SELECT count(*) FROM contratos;"
 ```
 
 ## Agendamento
 
 A DAG roda todos os dias às 19:00 (`America/Fortaleza`). Cada execução baixa os contratos desde 01/01/2025 até o fim do mês da execução. Registros já existentes são ignorados pela cláusula `ON CONFLICT (id) DO NOTHING`.
 
+## Atualizando DAGs e scripts
+
+Os arquivos de `dags/`, `plugins/` e `initdb/` são copiados para as imagens durante o build. Por isso, cada alteração exige um novo build:
+
+```bash
+docker compose up -d --build
+```
+
+No Coolify, o mesmo efeito é obtido com commit, push e **Redeploy**.
+
+Os scripts de `initdb/` só rodam quando o volume `pg_data` é criado. Se você alterar um desses arquivos, remova o volume para recriar o banco. Isso apaga os dados:
+
+```bash
+docker compose down -v
+docker compose up -d --build
+```
+
 ## Solução de problemas
 
 - **Tabela vazia após a execução:** veja os logs da task `coletar` (quantos registros foram coletados) e da task `salvar`.
-- **Erro de permissão em `logs` ou `plugins` (Linux):** `sudo chown -R 50000:0 logs plugins dags`.
-- **Alterou um arquivo de `initdb/`:** os scripts só rodam com um volume novo. Use `docker compose down -v` para recriar o banco. Isso apaga os dados.
+- **Interface sem DAGs:** confirme que os arquivos chegaram ao container com `docker exec <apiserver> ls /opt/airflow/dags`.
+- **CPU alta no `airflow-apiserver`:** verifique se a variável `AIRFLOW__API__WORKERS` está definida como `1`.
+- **Erro de permissão em `logs`:** os logs ficam em volume nomeado (`airflow_logs`), então não é preciso ajustar permissões de pastas.
 - **Porta em uso:** altere o lado esquerdo do mapeamento em `ports` no `docker-compose.yaml`.
 
 ## Deploy
